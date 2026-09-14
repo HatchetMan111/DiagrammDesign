@@ -20,6 +20,7 @@ DEFAULTS = {
     "base_url": "http://192.168.178.127:20128/v1",
     "api_key": "",
     "model": "auto/best-free",
+    "keys": {},
 }
 PROVIDER_URLS = {
     "omniroute": "http://192.168.178.127:20128/v1",
@@ -86,9 +87,14 @@ Vom Nutzer gewählter Diagrammtyp und Stil-Referenz folgen unten. Baue darauf da
 
 def load_settings():
     s = dict(DEFAULTS)
+    s["keys"] = dict(DEFAULTS.get("keys") or {})
     try:
         with open(SETTINGS_FILE, encoding="utf-8") as f:
-            s.update(json.load(f))
+            data = json.load(f)
+            if isinstance(data, dict):
+                s.update(data)
+                if not isinstance(s.get("keys"), dict):
+                    s["keys"] = {}
     except (OSError, ValueError):
         pass
     return s
@@ -338,6 +344,12 @@ class Handler(BaseHTTPRequestHandler):
             for k in ("provider", "base_url", "api_key", "model"):
                 if k in payload and isinstance(payload[k], str):
                     s[k] = payload[k].strip() if k != "api_key" else payload[k]
+            if "keys" in payload and isinstance(payload["keys"], dict):
+                if not isinstance(s.get("keys"), dict):
+                    s["keys"] = {}
+                for pk, pv in payload["keys"].items():
+                    if isinstance(pv, str):
+                        s["keys"][pk] = pv
             if s["provider"] in PROVIDER_URLS and not payload.get("base_url"):
                 s["base_url"] = PROVIDER_URLS[s["provider"]]
             save_settings(s)

@@ -86,8 +86,8 @@ td.mono{font-family:'Geist Mono',monospace;font-size:.75rem;word-break:break-all
   </div>
 
   <div id="pane-settings" class="card" style="display:none">
-    <label for="provider">Anbieter</label>
-    <select id="provider" onchange="preset()">
+    <label for="provider">Anbieter (Wechsel lädt dessen Modelle)</label>
+    <select id="provider" onchange="switchProvider()">
       <option value="omniroute">OmniRoute (lokal)</option>
       <option value="openrouter">OpenRouter</option>
       <option value="custom">Benutzerdefiniert (OpenAI-kompatibel)</option>
@@ -102,7 +102,9 @@ td.mono{font-family:'Geist Mono',monospace;font-size:.75rem;word-break:break-all
     <div class="dlrow">
       <button class="btn ghost" id="mload" onclick="loadModels()">Modelle vom Anbieter laden</button>
     </div>
-    <select id="modelsel" style="margin-top:.5rem" onchange="pickModel()"><option value="">– erst laden –</option></select>
+    <label for="modelsearch">Modelle suchen <span id="mcount" style="text-transform:none;letter-spacing:0"></span></label>
+    <input id="modelsearch" placeholder="z. B. claude, llama, free …" oninput="renderModelList()">
+    <select id="modelsel" size="8" style="margin-top:.5rem" onchange="pickModel()"><option value="">– erst laden –</option></select>
     <div><button class="btn" onclick="savesettings()">Einstellungen speichern</button></div>
     <div class="status" id="sstatus"></div>
     <p class="hint">Der Key wird nur auf diesem Server in <code>settings.json</code> gespeichert und nie woandershin gesendet als an die oben stehende Basis-URL.</p>
@@ -114,18 +116,29 @@ function show(p){for(const k of ['make','list','settings']){
 document.getElementById('pane-'+k).style.display=k===p?'':'none';
 document.getElementById('tab-'+k).classList.toggle('active',k===p);}
 if(p==='list')loadDiagrams();}
-function preset(){const p=document.getElementById('provider').value;
+let allModels=[],savedKeys={};
+function curProvider(){return document.getElementById('provider').value;}
+function preset(){const p=curProvider();
 if(URLS[p])document.getElementById('base_url').value=URLS[p];}
+function switchProvider(){const p=curProvider();preset();
+if(savedKeys[p]!==undefined)document.getElementById('api_key').value=savedKeys[p];
+document.getElementById('modelsel').innerHTML='<option value="">– erst laden –</option>';
+allModels=[];document.getElementById('modelsearch').value='';
+loadModels();}
 async function loadTypes(){const r=await fetch('/api/types');const t=await r.json();
 document.getElementById('dtype').innerHTML=t.map(x=>`<option value="${x.id}">${x.label}</option>`).join('');}
 async function loadSettings(){const r=await fetch('/api/settings');const s=await r.json();
 document.getElementById('provider').value=s.provider||'custom';
 document.getElementById('base_url').value=s.base_url||'';
-document.getElementById('api_key').value=s.api_key||'';
+savedKeys=(s.keys&&typeof s.keys==='object')?s.keys:{};
+const p=document.getElementById('provider').value;
+document.getElementById('api_key').value=(savedKeys[p]!==undefined&&savedKeys[p]!=='')?savedKeys[p]:(s.api_key||'');
 document.getElementById('model').value=s.model||'';}
-async function savesettings(){const b={provider:document.getElementById('provider').value,
+async function savesettings(){const p=curProvider();
+savedKeys[p]=document.getElementById('api_key').value;
+const b={provider:p,
 base_url:document.getElementById('base_url').value.trim(),api_key:document.getElementById('api_key').value,
-model:document.getElementById('model').value.trim()};
+model:document.getElementById('model').value.trim(),keys:savedKeys};
 const el=document.getElementById('sstatus');el.classList.remove('err');el.textContent='Speichere …';
 try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
 const j=await r.json();el.textContent=j.ok?'Gespeichert.':'Fehler: '+(j.error||r.status);}catch(e){el.classList.add('err');el.textContent='Fehler: '+e;}}
@@ -153,13 +166,19 @@ const q=new URLSearchParams({base_url:document.getElementById('base_url').value.
 api_key:document.getElementById('api_key').value});
 try{const r=await fetch('/api/models?'+q.toString());const j=await r.json();
 if(!j.ok)throw new Error(j.error||r.status);
-const cur=document.getElementById('model').value.trim();
-const sel=document.getElementById('modelsel');
-sel.innerHTML=j.models.map(m=>`<option value="${m}">${m}</option>`).join('')||'<option value="">(keine)</option>';
-if(cur&&j.models.includes(cur))sel.value=cur;
-el.textContent=j.models.length+' Modelle geladen – wählen und speichern.';
+allModels=j.models||[];
+renderModelList();
+el.textContent=allModels.length+' Modelle geladen – suchen, wählen und speichern.';
 }catch(e){el.classList.add('err');el.textContent='Fehler: '+e.message;}
 document.getElementById('mload').disabled=false;}
+function renderModelList(){const q=document.getElementById('modelsearch').value.trim().toLowerCase();
+const cur=document.getElementById('model').value.trim();
+const sel=document.getElementById('modelsel');
+const list=q?allModels.filter(m=>m.toLowerCase().includes(q)):allModels;
+sel.innerHTML=list.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('')||'<option value="">(kein Treffer)</option>';
+if(cur&&list.includes(cur))sel.value=cur;
+const hint=document.getElementById('mcount');
+if(hint)hint.textContent=q?list.length+' / '+allModels.length+' Treffer':allModels.length+' Modelle';}
 function pickModel(){const v=document.getElementById('modelsel').value;
 if(v)document.getElementById('model').value=v;}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
