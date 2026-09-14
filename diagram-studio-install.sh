@@ -14,6 +14,7 @@
 #   VMID=200 HN=diagram-studio CORES=2 MEMORY=2048 DISK=8 BRIDGE=vmbr0
 #   PASSWORD=geheim PORT=8123 ARTIFACT_BASE=http://192.168.178.51:8090
 #   STORAGE=local-lvm TEMPLATE="local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
+#   REUSE=1  (bestehenden Container $VMID weiterinstallieren statt neu erstellen)
 ###############################################################################
 set -euo pipefail
 
@@ -43,7 +44,14 @@ if [ -z "${VMID:-}" ]; then
   VMID="$(pvesh get /cluster/nextid)"
 fi
 msg "VMID: $VMID"
-pct status "$VMID" >/dev/null 2>&1 && fail "VMID $VMID ist bereits belegt (VMID=... zum Überschreiben einer freien ID setzen)."
+if pct status "$VMID" >/dev/null 2>&1; then
+  if [ "${REUSE:-0}" = "1" ]; then
+    warn "VMID $VMID existiert bereits — REUSE=1, überspringe Erstellung."
+    pct start "$VMID" 2>/dev/null || true
+  else
+    fail "VMID $VMID ist bereits belegt (pct destroy $VMID für neu, oder REUSE=1 VMID=$VMID … zum Weiterinstallieren)."
+  fi
+else
 
 # --- Storage (rootdir-fähig, bevorzugt local-lvm, dann local) ---
 if [ -z "${STORAGE:-}" ]; then
@@ -92,6 +100,7 @@ pct create "$VMID" "$TEMPLATE" \
   --net0 "name=eth0,bridge=$BRIDGE,ip=dhcp" \
   --unprivileged 1 --features nesting=1 --onboot 1 \
   --password "$PASSWORD" --start 1
+fi
 
 msg "Warte auf Netzwerk im Container …"
 IP=""
@@ -107,7 +116,7 @@ msg "Installiere Diagram-Studio …"
 pct exec "$VMID" -- bash -c "apt-get update -qq && apt-get install -y -qq python3 curl >/dev/null && mkdir -p /opt/diagram-studio/generated"
 curl -fsSL "$TARBALL_URL" -o /tmp/diagram-studio.tar.gz || fail "Tarball-Download fehlgeschlagen: $TARBALL_URL"
 pct push "$VMID" /tmp/diagram-studio.tar.gz /tmp/diagram-studio.tar.gz
-pct exec "$VMID" -- bash -c "tar xzf /tmp/diagram-studio.tar.gz -C /opt/diagram-studio && cp /opt/diagram-studio/diagram-studio.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now diagram-studio"
+pct exec "$VMID" -- bash -c "tar xzf /tmp/diagram-studio.tar.gz --strip-components=1 -C /opt/diagram-studio && cp /opt/diagram-studio/diagram-studio.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now diagram-studio"
 rm -f /tmp/diagram-studio.tar.gz
 
 sleep 2
@@ -115,8 +124,8 @@ pct exec "$VMID" -- bash -c "curl -fsS -o /dev/null http://127.0.0.1:$PORT/" || 
 
 echo
 msg "FERTIG ✅  http://$IP:$PORT"
-[ "$GEN_PW" -eq 1 ] && msg "LXC-root-Passwort (einmalig notieren): $PASSWORD"
+[ "${GEN_PW:-0}" -eq 1 ] && msg "LXC-root-Passwort (einmalig notieren): $PASSWORD"
 msg "KI einrichten: im Browser oben auf 'Einstellungen (KI)' → Anbieter wählen,"
 msg "     OmniRoute-Key oder OpenRouter-Key eintragen, Modell setzen, speichern."
 msg "Update der App: Tarball erneut ausrollen mit"
-msg "     curl -fsSL $TARBALL_URL -o /tmp/ds.tgz && pct push $VMID /tmp/ds.tgz /tmp/ds.tgz && pct exec $VMID -- bash -c 'tar xzf /tmp/ds.tgz -C /opt/diagram-studio && systemctl restart diagram-studio'"
+msg "     curl -fsSL $TARBALL_URL -o /tmp/ds.tgz && pct push $VMID /tmp/ds.tgz /tmp/ds.tgz && pct exec $VMID -- bash -c 'tar xzf /tmp/ds.tgz --strip-components=1 -C /opt/diagram-studio && systemctl restart diagram-studio'"
