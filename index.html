@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Diagram-Studio</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{--paper:#f5f5f5;--ink:#2d3142;--muted:#4f5d75;--soft:#7a8399;--accent:#eb6c36;--rule:rgba(45,49,66,.12)}
@@ -105,7 +106,8 @@ td.mono{font-family:'Geist Mono',monospace;font-size:.75rem;word-break:break-all
     <label for="modelsearch">Modelle suchen <span id="mcount" style="text-transform:none;letter-spacing:0"></span></label>
     <input id="modelsearch" placeholder="z. B. claude, llama, free …" oninput="renderModelList()">
     <select id="modelsel" size="8" style="margin-top:.5rem" onchange="pickModel()"><option value="">– erst laden –</option></select>
-    <div><button class="btn" onclick="savesettings()">Einstellungen speichern</button></div>
+    <div><button class="btn" onclick="savesettings()">Einstellungen speichern</button>
+    <button class="btn ghost" id="tbtn" onclick="testconn()">Verbindung testen</button></div>
     <div class="status" id="sstatus"></div>
     <p class="hint">Der Key wird nur auf diesem Server in <code>settings.json</code> gespeichert und nie woandershin gesendet als an die oben stehende Basis-URL.</p>
   </div>
@@ -142,6 +144,17 @@ model:document.getElementById('model').value.trim(),keys:savedKeys};
 const el=document.getElementById('sstatus');el.classList.remove('err');el.textContent='Speichere …';
 try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
 const j=await r.json();el.textContent=j.ok?'Gespeichert.':'Fehler: '+(j.error||r.status);}catch(e){el.classList.add('err');el.textContent='Fehler: '+e;}}
+async function testconn(){const el=document.getElementById('sstatus');el.classList.remove('err');
+el.textContent='Teste … (eine kurze Anfrage an das gewählte Modell)';
+document.getElementById('tbtn').disabled=true;
+const b={provider:curProvider(),base_url:document.getElementById('base_url').value.trim(),
+api_key:document.getElementById('api_key').value,model:document.getElementById('model').value.trim()};
+try{const r=await fetch('/api/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+const j=await r.json();
+el.textContent=j.ok?('OK – Modell antwortet ('+(j.model||'?')+'): '+j.reply):('Fehler: '+(j.error||r.status));
+if(!j.ok)el.classList.add('err');
+}catch(e){el.classList.add('err');el.textContent='Fehler: '+e;}
+document.getElementById('tbtn').disabled=false;}
 async function generate(){const btn=document.getElementById('go');const st=document.getElementById('mstatus');
 st.classList.remove('err');st.textContent='Erzeuge …';btn.disabled=true;
 document.getElementById('preview').style.display='none';

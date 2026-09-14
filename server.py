@@ -151,6 +151,57 @@ def type_reference(dtype):
     return ""
 
 
+def post_chat(settings, payload):
+    """POST an einen OpenAI-kompatiblen /chat/completions-Endpunkt."""
+    body = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        settings["base_url"].rstrip("/") + "/chat/completions", data=body,
+        headers={"Content-Type": "application/json",
+                 "HTTP-Referer": "https://github.com/HatchetMan111/DiagrammDesign",
+                 "X-Title": "Diagram-Studio"})
+    if settings.get("api_key"):
+        req.add_header("Authorization", "Bearer " + settings["api_key"])
+    try:
+        with urllib.request.urlopen(req, timeout=180) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()[:1000]
+        msg = raw
+        try:
+            ej = json.loads(raw)
+            em = ej.get("error") if isinstance(ej, dict) else None
+            if isinstance(em, dict) and em.get("message"):
+                msg = em["message"]
+            elif isinstance(em, str):
+                msg = em
+        except ValueError:
+            pass
+        raise RuntimeError(f"LLM-HTTP {e.code}: {msg}")
+    except Exception as e:
+        raise RuntimeError(f"LLM-Verbindung fehlgeschlagen: {e}")
+
+
+def check_data(data):
+    if isinstance(data, dict) and data.get("error"):
+        em = data["error"]
+        msg = em.get("message") if isinstance(em, dict) else em
+        raise RuntimeError(f"LLM-Fehler: {msg}")
+    return data
+
+
+def llm_test(settings):
+    data = check_data(post_chat(settings, {
+        "model": settings.get("model") or "auto/best-free",
+        "messages": [{"role": "user", "content": "Antworte mit genau einem Wort: OK"}],
+        "max_tokens": 10,
+        "temperature": 0,
+    }))
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError):
+        raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
+
+
 def llm_generate(settings, dtype, variant, prompt):
     ref = type_reference(dtype)
     system = CORE_RULES + "\n\n--- TYP-REFERENZ (" + dtype + ") ---\n" + ref
@@ -163,26 +214,14 @@ def llm_generate(settings, dtype, variant, prompt):
             tpl = f.read()
         system += "\n\n--- TEMPLATE (minimal, als Gerüst nutzen, IDs/Slug ersetzen) ---\n" + tpl[:6000]
     user = f"Diagrammtyp: {dtype}\nWunsch:\n{prompt}"
-    body = json.dumps({
+    data = check_data(post_chat(settings, {
         "model": settings.get("model") or "auto/best-free",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
         "temperature": 0.4,
-    }).encode()
-    req = urllib.request.Request(
-        settings["base_url"].rstrip("/") + "/chat/completions", data=body,
-        headers={"Content-Type": "application/json"})
-    if settings.get("api_key"):
-        req.add_header("Authorization", "Bearer " + settings["api_key"])
-    try:
-        with urllib.request.urlopen(req, timeout=180) as r:
-            data = json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"LLM-HTTP {e.code}: {e.read().decode()[:500]}")
-    except Exception as e:
-        raise RuntimeError(f"LLM-Verbindung fehlgeschlagen: {e}")
+    }))
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError):
@@ -258,6 +297,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path in ("/", "/index.html"):
             self._send_file(os.path.join(BASE, "index.html"), "text/html; charset=utf-8")
+        elif u.path in ("/favicon.svg", "/favicon.ico"):
+            self._send_file(os.path.join(BASE, "favicon.svg"), "image/svg+xml")
         elif u.path == "/api/settings":
             self._json(load_settings())
         elif u.path == "/api/types":
@@ -354,6 +395,21 @@ class Handler(BaseHTTPRequestHandler):
                 s["base_url"] = PROVIDER_URLS[s["provider"]]
             save_settings(s)
             self._json({"ok": True})
+        elif u.path == "/api/test":
+            s = load_settings()
+            for k in ("provider", "base_url", "api_key", "model"):
+                if k in payload and isinstance(payload[k], str):
+                    s[k] = payload[k].strip() if k != "api_key" else payload[k]
+            if not s.get("base_url"):
+                self._json({"ok": False, "error": "Keine API-Basis-URL gesetzt."}, 400)
+                return
+            try:
+                reply = llm_test(s)
+                self._json({"ok": True, "model": s.get("model"), "reply": reply})
+            except RuntimeError as e:
+                self._json({"ok": False, "error": str(e)}, 502)
+            except Exception as e:
+                self._json({"ok": False, "error": f"Unerwartet: {e}"}, 500)
         elif u.path == "/api/generate":
             prompt = (payload.get("prompt") or "").strip()
             dtype = (payload.get("dtype") or "architecture").strip()

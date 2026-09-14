@@ -40,8 +40,9 @@ python3 server.py 8123
 
 | Datei | Zweck |
 |---|---|
-| `server.py` | Backend (stdlib-only): UI, Settings-API, LLM-Proxy, Download |
-| `index.html` | Web-UI (Erstellen + Einstellungen) |
+| `server.py` | Backend (stdlib-only): UI, Settings-/Models-/Test-API, LLM-Proxy, Diagramm-Tabelle, Download |
+| `index.html` | Web-UI (Erstellen + Diagramm-Tabelle + Einstellungen mit Modell-Suche und Verbindungstest) |
+| `favicon.svg` | Browser-Tab-Icon (dunkles Quadrat, coral Knoten) |
 | `diagram-studio.service` | systemd-Unit (Port 8123) |
 | `diagram-studio-install.sh` | LXC-Installer für den Proxmox-Host |
 | `skill/` | diagram-design Referenzen + Templates (wird an die KI als Stil-Kontext gegeben) |
