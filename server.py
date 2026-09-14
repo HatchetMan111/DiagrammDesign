@@ -104,6 +104,38 @@ def slugify(t):
     return (t or "diagramm")[:40]
 
 
+def gen_path(name):
+    """Pfad zu einer generierten Datei oder None bei ungültigem Namen."""
+    name = unquote(name)
+    if not name or "/" in name or "\\" in name or ".." in name \
+            or not name.endswith(".html"):
+        return None
+    return os.path.join(GEN_DIR, name)
+
+
+def fetch_models(base_url, api_key):
+    """Modelliste von einem OpenAI-kompatiblen /models-Endpunkt holen."""
+    req = urllib.request.Request(base_url.rstrip("/") + "/models")
+    if api_key:
+        req.add_header("Authorization", "Bearer " + api_key)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Modelle-HTTP {e.code}: {e.read().decode()[:300]}")
+    except Exception as e:
+        raise RuntimeError(f"Modelliste nicht erreichbar: {e}")
+    items = data.get("data") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        raise RuntimeError("Unerwartetes /models-Format.")
+    out = []
+    for m in items:
+        mid = m.get("id") if isinstance(m, dict) else None
+        if mid:
+            out.append(mid)
+    return sorted(set(out))
+
+
 def type_reference(dtype):
     for cand in (f"type-{dtype}.md",):
         p = os.path.join(BASE, "skill", "references", cand)
@@ -224,16 +256,69 @@ class Handler(BaseHTTPRequestHandler):
             self._json(load_settings())
         elif u.path == "/api/types":
             self._json([{"id": t, "label": l} for t, l in TYPES])
+        elif u.path == "/api/models":
+            from urllib.parse import parse_qs as _pq
+            q = _pq(u.query)
+            s = load_settings()
+            base = (q.get("base_url", [s.get("base_url", "")])[0] or "").strip()
+            key = q.get("api_key", [s.get("api_key", "")])[0] or ""
+            if not base:
+                self._json({"ok": False, "error": "Keine API-Basis-URL gesetzt."}, 400)
+                return
+            try:
+                self._json({"ok": True, "models": fetch_models(base, key)})
+            except RuntimeError as e:
+                self._json({"ok": False, "error": str(e)}, 502)
+        elif u.path == "/api/diagrams":
+            rows = []
+            try:
+                names = sorted(os.listdir(GEN_DIR), reverse=True)
+            except OSError:
+                names = []
+            for n in names:
+                if not n.endswith(".html"):
+                    continue
+                p = os.path.join(GEN_DIR, n)
+                try:
+                    st = os.stat(p)
+                except OSError:
+                    continue
+                import time as _t
+                tail = n.rsplit("-", 1)[-1]
+                if tail.endswith(".html"):
+                    tail = tail[:-5]
+                dtype = tail if any(t == tail for t, _ in TYPES) else ""
+                rows.append({"file": n, "dtype": dtype,
+                             "size": st.st_size, "mtime": int(st.st_mtime),
+                             "created": _t.strftime("%d.%m.%Y %H:%M", _t.localtime(st.st_mtime))})
+            self._json({"ok": True, "diagrams": rows})
         elif u.path.startswith("/generated/"):
-            name = unquote(u.path[len("/generated/"):])
-            if not name or "/" in name or "\\" in name or not name.endswith(".html"):
+            path = gen_path(u.path[len("/generated/"):])
+            if not path:
                 self.send_error(400)
                 return
-            path = os.path.join(GEN_DIR, name)
             from urllib.parse import parse_qs as _pq
             dl = "download" in _pq(u.query)
+            name = os.path.basename(path)
             self._send_file(path, "text/html; charset=utf-8",
                             download_name=name if dl else None)
+        else:
+            self.send_error(404)
+
+    def do_DELETE(self):
+        u = urlparse(self.path)
+        if u.path.startswith("/api/diagrams/"):
+            path = gen_path(u.path[len("/api/diagrams/"):])
+            if not path:
+                self._json({"ok": False, "error": "Ungültiger Dateiname."}, 400)
+                return
+            try:
+                os.remove(path)
+                self._json({"ok": True})
+            except FileNotFoundError:
+                self._json({"ok": False, "error": "Datei nicht gefunden."}, 404)
+            except OSError as e:
+                self._json({"ok": False, "error": str(e)}, 500)
         else:
             self.send_error(404)
 

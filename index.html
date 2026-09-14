@@ -32,6 +32,13 @@ textarea{min-height:110px;resize:vertical}
 .preview iframe{width:100%;height:560px;border:1px solid var(--rule);border-radius:6px;background:#fff}
 .dlrow{display:flex;gap:.75rem;flex-wrap:wrap;align-items:center}
 .hint{font-size:.8rem;color:var(--soft);margin-top:.5rem}
+table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:.75rem}
+th{font-family:'Geist Mono',monospace;font-size:.68rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);text-align:left;padding:.5rem;border-bottom:1px solid var(--rule)}
+td{padding:.5rem;border-bottom:1px solid var(--rule);vertical-align:middle}
+td.mono{font-family:'Geist Mono',monospace;font-size:.75rem;word-break:break-all}
+.linkbtn{font:600 .78rem 'Geist',sans-serif;padding:.35rem .7rem;border-radius:6px;border:1px solid var(--ink);background:#fff;color:var(--ink);cursor:pointer;text-decoration:none;display:inline-block;margin-right:.35rem}
+.linkbtn.danger{border-color:#b3261e;color:#b3261e}
+.empty{color:var(--soft);font-size:.85rem;margin-top:.75rem}
 </style>
 </head>
 <body>
@@ -41,6 +48,7 @@ textarea{min-height:110px;resize:vertical}
   <p class="sub">Beschreiben, Typ wählen, erzeugen – Vorschau prüfen, per Button herunterladen.</p>
   <div class="tabs">
     <button id="tab-make" class="active" onclick="show('make')">Erstellen</button>
+    <button id="tab-list" onclick="show('list')">Diagramme</button>
     <button id="tab-settings" onclick="show('settings')">Einstellungen (KI)</button>
   </div>
 
@@ -69,6 +77,14 @@ textarea{min-height:110px;resize:vertical}
     </div>
   </div>
 
+  <div id="pane-list" class="card" style="display:none">
+    <div class="dlrow">
+      <button class="btn ghost" onclick="loadDiagrams()">↻ Aktualisieren</button>
+    </div>
+    <div class="status" id="lstatus"></div>
+    <div id="dtable"></div>
+  </div>
+
   <div id="pane-settings" class="card" style="display:none">
     <label for="provider">Anbieter</label>
     <select id="provider" onchange="preset()">
@@ -80,19 +96,24 @@ textarea{min-height:110px;resize:vertical}
     <input id="base_url" placeholder="https://openrouter.ai/api/v1">
     <div class="row">
       <div><label for="api_key">API-Key</label><input id="api_key" type="password" autocomplete="off" placeholder="sk-…"></div>
-      <div><label for="model">Modell</label><input id="model" placeholder="z. B. auto/best-free"></div>
+      <div><label for="model">Modell (ID aus der Liste oder frei)</label><input id="model" placeholder="z. B. auto/best-free"></div>
     </div>
-    <button class="btn" onclick="savesettings()">Einstellungen speichern</button>
+    <label for="modelsel">Verfügbare Modelle</label>
+    <div class="dlrow">
+      <button class="btn ghost" id="mload" onclick="loadModels()">Modelle vom Anbieter laden</button>
+    </div>
+    <select id="modelsel" style="margin-top:.5rem" onchange="pickModel()"><option value="">– erst laden –</option></select>
+    <div><button class="btn" onclick="savesettings()">Einstellungen speichern</button></div>
     <div class="status" id="sstatus"></div>
     <p class="hint">Der Key wird nur auf diesem Server in <code>settings.json</code> gespeichert und nie woandershin gesendet als an die oben stehende Basis-URL.</p>
   </div>
 </div>
 <script>
 const URLS={omniroute:'http://192.168.178.127:20128/v1',openrouter:'https://openrouter.ai/api/v1'};
-function show(p){document.getElementById('pane-make').style.display=p==='make'?'':'none';
-document.getElementById('pane-settings').style.display=p==='settings'?'':'none';
-document.getElementById('tab-make').classList.toggle('active',p==='make');
-document.getElementById('tab-settings').classList.toggle('active',p==='settings');}
+function show(p){for(const k of ['make','list','settings']){
+document.getElementById('pane-'+k).style.display=k===p?'':'none';
+document.getElementById('tab-'+k).classList.toggle('active',k===p);}
+if(p==='list')loadDiagrams();}
 function preset(){const p=document.getElementById('provider').value;
 if(URLS[p])document.getElementById('base_url').value=URLS[p];}
 async function loadTypes(){const r=await fetch('/api/types');const t=await r.json();
@@ -120,9 +141,44 @@ const view='/generated/'+j.file,dl=view+'?download=1';
 document.getElementById('dllink').href=dl;document.getElementById('dllink').setAttribute('download',j.file);
 document.getElementById('openlink').href=view;document.getElementById('fname').textContent=j.file;
 document.getElementById('frame').src=view;document.getElementById('preview').style.display='';
-}catch(e){st.classList.add('err');st.textContent='Fehler: '+e.message;}
-btn.disabled=false;}
-loadTypes();loadSettings();
+}catch(e){st.classList.add('err');
+let m='Fehler: '+e.message;
+if(/model|401|404|not supported|No endpoints/i.test(e.message))
+m+='\n→ Tipp: Unter „Einstellungen (KI)" auf „Modelle vom Anbieter laden" klicken, eine ID aus der Liste wählen und speichern.';
+st.textContent=m;}
+btn.disabled=false;loadDiagrams();}
+async function loadModels(){const el=document.getElementById('sstatus');el.classList.remove('err');
+el.textContent='Lade Modelle …';document.getElementById('mload').disabled=true;
+const q=new URLSearchParams({base_url:document.getElementById('base_url').value.trim(),
+api_key:document.getElementById('api_key').value});
+try{const r=await fetch('/api/models?'+q.toString());const j=await r.json();
+if(!j.ok)throw new Error(j.error||r.status);
+const cur=document.getElementById('model').value.trim();
+const sel=document.getElementById('modelsel');
+sel.innerHTML=j.models.map(m=>`<option value="${m}">${m}</option>`).join('')||'<option value="">(keine)</option>';
+if(cur&&j.models.includes(cur))sel.value=cur;
+el.textContent=j.models.length+' Modelle geladen – wählen und speichern.';
+}catch(e){el.classList.add('err');el.textContent='Fehler: '+e.message;}
+document.getElementById('mload').disabled=false;}
+function pickModel(){const v=document.getElementById('modelsel').value;
+if(v)document.getElementById('model').value=v;}
+function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+async function loadDiagrams(){const st=document.getElementById('lstatus');const box=document.getElementById('dtable');
+try{const r=await fetch('/api/diagrams');const j=await r.json();if(!j.ok)throw new Error(j.error||r.status);
+if(!j.diagrams.length){box.innerHTML='<p class="empty">Noch keine Diagramme erzeugt.</p>';st.textContent='';return;}
+st.textContent=j.diagrams.length+' Diagramme auf dem Server (generated/).';
+box.innerHTML='<table><thead><tr><th>Datei / Pfad</th><th>Typ</th><th>Größe</th><th>Erstellt</th><th>Aktionen</th></tr></thead><tbody>'+
+j.diagrams.map(d=>`<tr><td class="mono">${esc(d.file)}<br><span style="color:var(--soft)">generated/${esc(d.file)}</span></td>`+
+`<td>${esc(d.dtype||'–')}</td><td>${(d.size/1024).toFixed(1)} KB</td><td>${esc(d.created)}</td>`+
+`<td><a class="linkbtn" href="/generated/${encodeURIComponent(d.file)}" target="_blank">Öffnen</a>`+
+`<a class="linkbtn" href="/generated/${encodeURIComponent(d.file)}?download=1" download="${esc(d.file)}">⬇ Laden</a>`+
+`<button class="linkbtn danger" onclick="delDiagram('${esc(d.file)}')">Löschen</button></td></tr>`).join('')+
+'</tbody></table>';}catch(e){st.classList.add('err');st.textContent='Fehler: '+e.message;}}
+async function delDiagram(f){if(!confirm('Wirklich löschen?\n'+f))return;
+try{const r=await fetch('/api/diagrams/'+encodeURIComponent(f),{method:'DELETE'});
+const j=await r.json();if(!j.ok)throw new Error(j.error||r.status);loadDiagrams();
+}catch(e){alert('Fehler: '+e.message);}}
+loadTypes();loadSettings();loadDiagrams();
 </script>
 </body>
 </html>
