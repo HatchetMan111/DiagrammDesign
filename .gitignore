@@ -1,0 +1,5 @@
+settings.json
+generated/*.html
+generated/*.htm
+__pycache__/
+*.pyc

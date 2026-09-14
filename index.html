@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diagram-Studio</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--paper:#f5f5f5;--ink:#2d3142;--muted:#4f5d75;--soft:#7a8399;--accent:#eb6c36;--rule:rgba(45,49,66,.12)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Geist',system-ui,sans-serif;background:var(--paper);color:var(--ink);min-height:100vh;padding:2rem}
+.wrap{max-width:1100px;margin:0 auto}
+.eyebrow{font-family:'Geist Mono',monospace;font-size:.66rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:.5rem}
+h1{font-family:'Instrument Serif',serif;font-weight:400;font-size:2.2rem;margin-bottom:.25rem}
+.sub{color:var(--muted);margin-bottom:1.5rem}
+.tabs{display:flex;gap:.5rem;margin-bottom:1.25rem}
+.tabs button{font:600 .85rem 'Geist',sans-serif;padding:.6rem 1.1rem;border:1px solid var(--rule);border-radius:6px;background:#fff;color:var(--muted);cursor:pointer}
+.tabs button.active{background:var(--ink);color:#fff;border-color:var(--ink)}
+.card{background:#fff;border:1px solid var(--rule);border-radius:6px;padding:1.25rem;margin-bottom:1rem}
+label{display:block;font-family:'Geist Mono',monospace;font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin:.9rem 0 .35rem}
+textarea,input,select{width:100%;font:400 .9rem 'Geist',sans-serif;padding:.6rem;border:1px solid var(--rule);border-radius:6px;background:var(--paper);color:var(--ink)}
+textarea{min-height:110px;resize:vertical}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media(max-width:700px){.row{grid-template-columns:1fr}}
+.btn{display:inline-block;font:600 .9rem 'Geist',sans-serif;padding:.7rem 1.4rem;border-radius:6px;border:1px solid var(--ink);background:var(--ink);color:#fff;cursor:pointer;margin-top:1rem}
+.btn.accent{background:var(--accent);border-color:var(--accent)}
+.btn.ghost{background:transparent;color:var(--ink)}
+.btn:disabled{opacity:.5;cursor:wait}
+.status{font-family:'Geist Mono',monospace;font-size:.78rem;color:var(--muted);margin-top:.75rem;white-space:pre-wrap}
+.status.err{color:#b3261e}
+.preview{margin-top:1rem}
+.preview iframe{width:100%;height:560px;border:1px solid var(--rule);border-radius:6px;background:#fff}
+.dlrow{display:flex;gap:.75rem;flex-wrap:wrap;align-items:center}
+.hint{font-size:.8rem;color:var(--soft);margin-top:.5rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">Diagram-Studio · diagram-design</p>
+  <h1>Diagramme erstellen</h1>
+  <p class="sub">Beschreiben, Typ wählen, erzeugen – Vorschau prüfen, per Button herunterladen.</p>
+  <div class="tabs">
+    <button id="tab-make" class="active" onclick="show('make')">Erstellen</button>
+    <button id="tab-settings" onclick="show('settings')">Einstellungen (KI)</button>
+  </div>
+
+  <div id="pane-make" class="card">
+    <label for="prompt">Was soll das Diagramm zeigen?</label>
+    <textarea id="prompt" placeholder="z. B. Architektur meiner App: Frontend, Backend, Datenbank, Redis-Cache …"></textarea>
+    <div class="row">
+      <div><label for="dtype">Diagrammtyp</label><select id="dtype"></select></div>
+      <div><label for="variant">Variante</label>
+        <select id="variant"><option value="minimal">Minimal hell</option><option value="full">Full-Editorial (mit Karten)</option></select></div>
+    </div>
+    <div class="row">
+      <div><label for="mode">Modus</label>
+        <select id="mode"><option value="ai">Mit KI erzeugen</option><option value="draft">Schnell-Entwurf (ohne KI)</option></select></div>
+      <div><label>&nbsp;</label>
+        <button class="btn accent" id="go" onclick="generate()">Diagramm erzeugen</button></div>
+    </div>
+    <div class="status" id="mstatus"></div>
+    <div class="preview" id="preview" style="display:none">
+      <div class="dlrow">
+        <a class="btn" id="dllink" href="#" download>⬇ HTML herunterladen</a>
+        <a class="btn ghost" id="openlink" href="#" target="_blank">Im neuen Tab öffnen</a>
+      </div>
+      <p class="hint" id="fname"></p>
+      <iframe id="frame" title="Diagramm-Vorschau"></iframe>
+    </div>
+  </div>
+
+  <div id="pane-settings" class="card" style="display:none">
+    <label for="provider">Anbieter</label>
+    <select id="provider" onchange="preset()">
+      <option value="omniroute">OmniRoute (lokal)</option>
+      <option value="openrouter">OpenRouter</option>
+      <option value="custom">Benutzerdefiniert (OpenAI-kompatibel)</option>
+    </select>
+    <label for="base_url">API-Basis-URL</label>
+    <input id="base_url" placeholder="https://openrouter.ai/api/v1">
+    <div class="row">
+      <div><label for="api_key">API-Key</label><input id="api_key" type="password" autocomplete="off" placeholder="sk-…"></div>
+      <div><label for="model">Modell</label><input id="model" placeholder="z. B. auto/best-free"></div>
+    </div>
+    <button class="btn" onclick="savesettings()">Einstellungen speichern</button>
+    <div class="status" id="sstatus"></div>
+    <p class="hint">Der Key wird nur auf diesem Server in <code>settings.json</code> gespeichert und nie woandershin gesendet als an die oben stehende Basis-URL.</p>
+  </div>
+</div>
+<script>
+const URLS={omniroute:'http://192.168.178.127:20128/v1',openrouter:'https://openrouter.ai/api/v1'};
+function show(p){document.getElementById('pane-make').style.display=p==='make'?'':'none';
+document.getElementById('pane-settings').style.display=p==='settings'?'':'none';
+document.getElementById('tab-make').classList.toggle('active',p==='make');
+document.getElementById('tab-settings').classList.toggle('active',p==='settings');}
+function preset(){const p=document.getElementById('provider').value;
+if(URLS[p])document.getElementById('base_url').value=URLS[p];}
+async function loadTypes(){const r=await fetch('/api/types');const t=await r.json();
+document.getElementById('dtype').innerHTML=t.map(x=>`<option value="${x.id}">${x.label}</option>`).join('');}
+async function loadSettings(){const r=await fetch('/api/settings');const s=await r.json();
+document.getElementById('provider').value=s.provider||'custom';
+document.getElementById('base_url').value=s.base_url||'';
+document.getElementById('api_key').value=s.api_key||'';
+document.getElementById('model').value=s.model||'';}
+async function savesettings(){const b={provider:document.getElementById('provider').value,
+base_url:document.getElementById('base_url').value.trim(),api_key:document.getElementById('api_key').value,
+model:document.getElementById('model').value.trim()};
+const el=document.getElementById('sstatus');el.classList.remove('err');el.textContent='Speichere …';
+try{const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+const j=await r.json();el.textContent=j.ok?'Gespeichert.':'Fehler: '+(j.error||r.status);}catch(e){el.classList.add('err');el.textContent='Fehler: '+e;}}
+async function generate(){const btn=document.getElementById('go');const st=document.getElementById('mstatus');
+st.classList.remove('err');st.textContent='Erzeuge …';btn.disabled=true;
+document.getElementById('preview').style.display='none';
+try{const r=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+body:JSON.stringify({prompt:document.getElementById('prompt').value,dtype:document.getElementById('dtype').value,
+variant:document.getElementById('variant').value,mode:document.getElementById('mode').value})});
+const j=await r.json();if(!j.ok)throw new Error(j.error||r.status);
+st.textContent='Fertig: '+j.file;
+const view='/generated/'+j.file,dl=view+'?download=1';
+document.getElementById('dllink').href=dl;document.getElementById('dllink').setAttribute('download',j.file);
+document.getElementById('openlink').href=view;document.getElementById('fname').textContent=j.file;
+document.getElementById('frame').src=view;document.getElementById('preview').style.display='';
+}catch(e){st.classList.add('err');st.textContent='Fehler: '+e.message;}
+btn.disabled=false;}
+loadTypes();loadSettings();
+</script>
+</body>
+</html>
