@@ -2,18 +2,23 @@
 """Diagram-Studio: Web-UI zum Erstellen von diagram-design Diagrammen.
 Stdlib-only. Settings (OmniRoute/OpenRouter) via /api/settings.
 """
+import html as _html
 import json
 import os
 import re
+import time
 import urllib.request
 import urllib.error
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(BASE, "settings.json")
 GEN_DIR = os.path.join(BASE, "generated")
 os.makedirs(GEN_DIR, exist_ok=True)
+
+MAX_BODY = 1_000_000  # 1 MB Limit für POST-Bodys (DoS-Schutz)
+MAX_HTML = 5_000_000  # 5 MB Limit für generiertes HTML
 
 DEFAULTS = {
     "provider": "omniroute",
@@ -85,6 +90,15 @@ Pflicht-Regeln (editorial design system):
 Vom Nutzer gewählter Diagrammtyp und Stil-Referenz folgen unten. Baue darauf das Diagramm zum Nutzer-Wunsch."""
 
 
+def is_http_url(u):
+    """Nur http(s)-URLs erlauben (SSRF-Schutz für LLM-Proxy)."""
+    try:
+        p = urlparse((u or "").strip())
+        return p.scheme in ("http", "https") and bool(p.hostname)
+    except Exception:
+        return False
+
+
 def load_settings():
     s = dict(DEFAULTS)
     s["keys"] = dict(DEFAULTS.get("keys") or {})
@@ -114,13 +128,16 @@ def gen_path(name):
     """Pfad zu einer generierten Datei oder None bei ungültigem Namen."""
     name = unquote(name)
     if not name or "/" in name or "\\" in name or ".." in name \
-            or not name.endswith(".html"):
+            or not name.endswith(".html") or name in (".html",) \
+            or name.startswith(".") or "\x00" in name:
         return None
     return os.path.join(GEN_DIR, name)
 
 
 def fetch_models(base_url, api_key):
     """Modelliste von einem OpenAI-kompatiblen /models-Endpunkt holen."""
+    if not is_http_url(base_url):
+        raise RuntimeError("Ungültige API-Basis-URL (nur http/https erlaubt).")
     req = urllib.request.Request(base_url.rstrip("/") + "/models")
     if api_key:
         req.add_header("Authorization", "Bearer " + api_key)
@@ -153,9 +170,12 @@ def type_reference(dtype):
 
 def post_chat(settings, payload):
     """POST an einen OpenAI-kompatiblen /chat/completions-Endpunkt."""
+    base = (settings.get("base_url") or "").strip()
+    if not is_http_url(base):
+        raise RuntimeError("Ungültige API-Basis-URL (nur http/https erlaubt).")
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
-        settings["base_url"].rstrip("/") + "/chat/completions", data=body,
+        base.rstrip("/") + "/chat/completions", data=body,
         headers={"Content-Type": "application/json",
                  "HTTP-Referer": "https://github.com/HatchetMan111/DiagrammDesign",
                  "X-Title": "Diagram-Studio"})
@@ -197,22 +217,28 @@ def llm_test(settings):
         "temperature": 0,
     }))
     try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError):
+        content = data["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
+        return content.strip()
+    except (KeyError, IndexError, TypeError):
         raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
 
 
 def llm_generate(settings, dtype, variant, prompt):
     ref = type_reference(dtype)
     system = CORE_RULES + "\n\n--- TYP-REFERENZ (" + dtype + ") ---\n" + ref
-    if variant == "full":
-        with open(os.path.join(BASE, "skill", "template-full.html"), encoding="utf-8") as f:
-            tpl = f.read()
-        system += "\n\n--- TEMPLATE (Full-Editorial, als Gerüst nutzen, IDs/Slug ersetzen) ---\n" + tpl[:12000]
-    else:
-        with open(os.path.join(BASE, "skill", "template.html"), encoding="utf-8") as f:
-            tpl = f.read()
-        system += "\n\n--- TEMPLATE (minimal, als Gerüst nutzen, IDs/Slug ersetzen) ---\n" + tpl[:6000]
+    try:
+        if variant == "full":
+            with open(os.path.join(BASE, "skill", "template-full.html"), encoding="utf-8") as f:
+                tpl = f.read()
+            system += "\n\n--- TEMPLATE (Full-Editorial, als Gerüst nutzen, IDs/Slug ersetzen) ---\n" + tpl[:12000]
+        else:
+            with open(os.path.join(BASE, "skill", "template.html"), encoding="utf-8") as f:
+                tpl = f.read()
+            system += "\n\n--- TEMPLATE (minimal, als Gerüst nutzen, IDs/Slug ersetzen) ---\n" + tpl[:6000]
+    except OSError as e:
+        raise RuntimeError(f"Template fehlt: {e.filename or e}")
     user = f"Diagrammtyp: {dtype}\nWunsch:\n{prompt}"
     data = check_data(post_chat(settings, {
         "model": settings.get("model") or "auto/best-free",
@@ -224,20 +250,29 @@ def llm_generate(settings, dtype, variant, prompt):
     }))
     try:
         content = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError):
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
+    if not isinstance(content, str):
         raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
     m = re.search(r"```html\s*(.*?)```", content, re.S)
     html = (m.group(1) if m else content).strip()
-    if "<svg" not in html or "<html" not in html.lower():
+    if len(html) > MAX_HTML:
+        raise RuntimeError("LLM-Antwort zu groß (>5 MB), verworfen.")
+    if "<svg" not in html.lower() or "<html" not in html.lower():
         raise RuntimeError("LLM hat kein gültiges HTML+SVG geliefert.")
     return html
 
 
 def draft_generate(prompt, dtype):
-    with open(os.path.join(BASE, "skill", "template.html"), encoding="utf-8") as f:
-        tpl = f.read()
-    title = (prompt.strip().split("\n")[0] or "Mein Diagramm")[:80]
-    slug = slugify(title)
+    try:
+        with open(os.path.join(BASE, "skill", "template.html"), encoding="utf-8") as f:
+            tpl = f.read()
+    except OSError as e:
+        raise RuntimeError(f"Template fehlt: {e.filename or e}")
+    raw_title = (prompt.strip().split("\n")[0] or "Mein Diagramm")[:80]
+    title = _html.escape(raw_title)
+    slug = slugify(raw_title)
+    dtype_safe = _html.escape(dtype)
     nodes = [
         (140, 240, "Start", "Input"),
         (420, 240, "Kern", "Logik"),
@@ -259,10 +294,11 @@ def draft_generate(prompt, dtype):
         <text x="40" y="396" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.18em">LEGEND</text>
         <rect x="40" y="404" width="14" height="10" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
         <text x="60" y="412" fill="#4f5d75" font-size="8" font-family="'Geist', sans-serif">Entwurf — per KI verfeinern</text>"""
-    html = tpl.replace("[Diagram title]", title).replace("[Type]", dtype)
+    html = tpl.replace("[Diagram title]", title).replace("[Type]", dtype_safe)
     html = html.replace("[diagram-slug]", slug)
     html = html.replace("[One sentence describing what the diagram shows]",
-                        f"Schnell-Entwurf zum Thema {title} als {dtype}-Diagramm.")
+                        f"Schnell-Entwurf zum Thema {title} als {dtype_safe}-Diagramm.")
+    html = html.replace("<title>Diagram</title>", f"<title>{title}</title>")
     html = html.replace("<!-- Draw arrows first, then nodes. Replace with your content. -->", body)
     return html, slug
 
@@ -270,47 +306,81 @@ def draft_generate(prompt, dtype):
 class Handler(BaseHTTPRequestHandler):
     server_version = "DiagramStudio/1.0"
 
+    def _sec_headers(self):
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+
     def _json(self, obj, code=200):
         b = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._sec_headers()
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
-        self.wfile.write(b)
+        if self.command != "HEAD":
+            self.wfile.write(b)
 
-    def _send_file(self, path, ctype, download_name=None):
+    def _send_file(self, path, ctype, download_name=None, sandbox=False):
         try:
             with open(path, "rb") as f:
                 b = f.read()
         except OSError:
             self.send_error(404)
             return
+        # Sichere Download-Dateinamen (keine Quotes/Newlines → Header-Injection)
+        if download_name:
+            download_name = re.sub(r'[^A-Za-z0-9._-]', '_', download_name)[:120]
         self.send_response(200)
         self.send_header("Content-Type", ctype)
+        self._sec_headers()
+        if sandbox:
+            # Generierte LLM-Diagramme isolieren: kein Zugriff auf /api/* (Key-Klau via iframe-JS)
+            self.send_header("Content-Security-Policy", "sandbox allow-scripts")
         if download_name:
             self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
-        self.wfile.write(b)
+        if self.command != "HEAD":
+            self.wfile.write(b)
+
+    def _read_json(self):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > MAX_BODY:
+            return None, "Body zu groß (Limit 1 MB)."
+        if length < 0:
+            return None, "Ungültige Content-Length."
+        try:
+            raw = self.rfile.read(length).decode() if length else "{}"
+            return json.loads(raw or "{}"), None
+        except ValueError:
+            return None, "Ungültiges JSON"
+
+    def do_HEAD(self):
+        self.do_GET()
 
     def do_GET(self):
         u = urlparse(self.path)
         if u.path in ("/", "/index.html"):
             self._send_file(os.path.join(BASE, "index.html"), "text/html; charset=utf-8")
-        elif u.path in ("/favicon.svg", "/favicon.ico"):
+        elif u.path == "/favicon.svg":
             self._send_file(os.path.join(BASE, "favicon.svg"), "image/svg+xml")
         elif u.path == "/api/settings":
             self._json(load_settings())
         elif u.path == "/api/types":
             self._json([{"id": t, "label": l} for t, l in TYPES])
         elif u.path == "/api/models":
-            from urllib.parse import parse_qs as _pq
-            q = _pq(u.query)
+            q = parse_qs(u.query, keep_blank_values=True)
             s = load_settings()
             base = (q.get("base_url", [s.get("base_url", "")])[0] or "").strip()
             key = q.get("api_key", [s.get("api_key", "")])[0] or ""
             if not base:
                 self._json({"ok": False, "error": "Keine API-Basis-URL gesetzt."}, 400)
+                return
+            if not is_http_url(base):
+                self._json({"ok": False, "error": "Ungültige Basis-URL (nur http/https)."}, 400)
                 return
             try:
                 self._json({"ok": True, "models": fetch_models(base, key)})
@@ -330,25 +400,23 @@ class Handler(BaseHTTPRequestHandler):
                     st = os.stat(p)
                 except OSError:
                     continue
-                import time as _t
                 tail = n.rsplit("-", 1)[-1]
                 if tail.endswith(".html"):
                     tail = tail[:-5]
                 dtype = tail if any(t == tail for t, _ in TYPES) else ""
                 rows.append({"file": n, "dtype": dtype,
                              "size": st.st_size, "mtime": int(st.st_mtime),
-                             "created": _t.strftime("%d.%m.%Y %H:%M", _t.localtime(st.st_mtime))})
+                             "created": time.strftime("%d.%m.%Y %H:%M", time.localtime(st.st_mtime))})
             self._json({"ok": True, "diagrams": rows})
         elif u.path.startswith("/generated/"):
             path = gen_path(u.path[len("/generated/"):])
             if not path:
                 self.send_error(400)
                 return
-            from urllib.parse import parse_qs as _pq
-            dl = "download" in _pq(u.query)
+            dl = "download" in parse_qs(u.query, keep_blank_values=True)
             name = os.path.basename(path)
             self._send_file(path, "text/html; charset=utf-8",
-                            download_name=name if dl else None)
+                            download_name=name if dl else None, sandbox=True)
         else:
             self.send_error(404)
 
@@ -371,14 +439,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        try:
-            length = int(self.headers.get("Content-Length") or 0)
-        except ValueError:
-            length = 0
-        try:
-            payload = json.loads(self.rfile.read(length).decode() or "{}")
-        except ValueError:
-            self._json({"ok": False, "error": "Ungültiges JSON"}, 400)
+        payload, err = self._read_json()
+        if err:
+            code = 413 if "zu groß" in err else 400
+            self._json({"ok": False, "error": err}, code)
+            return
+        if u.path == "/api/models":
+            # POST-Variante (empfohlen): Key nicht in URL/Logs, statt GET /api/models?api_key=...
+            s = load_settings()
+            base = str(payload.get("base_url", s.get("base_url", "")) or "").strip()
+            key = payload.get("api_key", s.get("api_key", ""))
+            if not isinstance(key, str):
+                key = ""
+            if not base:
+                self._json({"ok": False, "error": "Keine API-Basis-URL gesetzt."}, 400)
+                return
+            if not is_http_url(base):
+                self._json({"ok": False, "error": "Ungültige Basis-URL (nur http/https)."}, 400)
+                return
+            try:
+                self._json({"ok": True, "models": fetch_models(base, key)})
+            except RuntimeError as e:
+                self._json({"ok": False, "error": str(e)}, 502)
             return
         if u.path == "/api/settings":
             s = load_settings()
@@ -391,8 +473,14 @@ class Handler(BaseHTTPRequestHandler):
                 for pk, pv in payload["keys"].items():
                     if isinstance(pv, str):
                         s["keys"][pk] = pv
-            if s["provider"] in PROVIDER_URLS and not payload.get("base_url"):
+            if s["provider"] in PROVIDER_URLS and "base_url" not in payload:
                 s["base_url"] = PROVIDER_URLS[s["provider"]]
+            if s.get("base_url") and not is_http_url(s["base_url"]):
+                self._json({"ok": False, "error": "Ungültige Basis-URL (nur http/https)."}, 400)
+                return
+            if len(s.get("model", "")) > 200:
+                self._json({"ok": False, "error": "Modell-ID zu lang."}, 400)
+                return
             save_settings(s)
             self._json({"ok": True})
         elif u.path == "/api/test":
@@ -403,16 +491,19 @@ class Handler(BaseHTTPRequestHandler):
             if not s.get("base_url"):
                 self._json({"ok": False, "error": "Keine API-Basis-URL gesetzt."}, 400)
                 return
+            if not is_http_url(s.get("base_url")):
+                self._json({"ok": False, "error": "Ungültige Basis-URL (nur http/https)."}, 400)
+                return
             try:
                 reply = llm_test(s)
                 self._json({"ok": True, "model": s.get("model"), "reply": reply})
             except RuntimeError as e:
                 self._json({"ok": False, "error": str(e)}, 502)
-            except Exception as e:
-                self._json({"ok": False, "error": f"Unerwartet: {e}"}, 500)
+            except Exception:
+                self._json({"ok": False, "error": "Unerwarteter Test-Fehler."}, 500)
         elif u.path == "/api/generate":
-            prompt = (payload.get("prompt") or "").strip()
-            dtype = (payload.get("dtype") or "architecture").strip()
+            prompt = str(payload.get("prompt") or "")[:4000].strip()
+            dtype = str(payload.get("dtype") or "architecture").strip()
             variant = payload.get("variant") if payload.get("variant") in ("minimal", "full") else "minimal"
             mode = payload.get("mode") if payload.get("mode") in ("ai", "draft") else "ai"
             if not prompt and mode == "ai":
@@ -429,15 +520,14 @@ class Handler(BaseHTTPRequestHandler):
                         raise RuntimeError("Keine API-Basis-URL konfiguriert (Einstellungen).")
                     html = llm_generate(settings, dtype, variant, prompt)
                     slug = slugify(prompt[:60])
-                import time
                 fname = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}-{dtype}.html"
                 with open(os.path.join(GEN_DIR, fname), "w", encoding="utf-8") as f:
                     f.write(html)
                 self._json({"ok": True, "file": fname})
             except RuntimeError as e:
                 self._json({"ok": False, "error": str(e)}, 502)
-            except Exception as e:
-                self._json({"ok": False, "error": f"Unerwartet: {e}"}, 500)
+            except Exception:
+                self._json({"ok": False, "error": "Unerwarteter Generierungs-Fehler."}, 500)
         else:
             self.send_error(404)
 
@@ -447,6 +537,13 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     import sys
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8123
+    try:
+        port = int(sys.argv[1]) if len(sys.argv) > 1 else 8123
+    except ValueError:
+        print("Fehler: Port muss eine Zahl sein.", flush=True)
+        sys.exit(2)
+    if not 1 <= port <= 65535:
+        print("Fehler: Port muss 1-65535 sein.", flush=True)
+        sys.exit(2)
     print(f"Diagram-Studio auf Port {port}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

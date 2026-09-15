@@ -6,9 +6,18 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/diagram-studio
-ExecStart=/usr/bin/python3 /opt/diagram-studio/server.py 8123
+Environment=PORT=8123
+ExecStart=/usr/bin/python3 /opt/diagram-studio/server.py ${PORT}
 Restart=always
 RestartSec=3
+# Hardening (läuft trotzdem als root, aber mit weniger Rechten):
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+ReadWritePaths=/opt/diagram-studio
 
 [Install]
 WantedBy=multi-user.target

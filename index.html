@@ -71,10 +71,10 @@ td.mono{font-family:'Geist Mono',monospace;font-size:.75rem;word-break:break-all
     <div class="preview" id="preview" style="display:none">
       <div class="dlrow">
         <a class="btn" id="dllink" href="#" download>⬇ HTML herunterladen</a>
-        <a class="btn ghost" id="openlink" href="#" target="_blank">Im neuen Tab öffnen</a>
+        <a class="btn ghost" id="openlink" href="#" target="_blank" rel="noopener">Im neuen Tab öffnen</a>
       </div>
       <p class="hint" id="fname"></p>
-      <iframe id="frame" title="Diagramm-Vorschau"></iframe>
+      <iframe id="frame" title="Diagramm-Vorschau" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
     </div>
   </div>
 
@@ -127,15 +127,19 @@ if(savedKeys[p]!==undefined)document.getElementById('api_key').value=savedKeys[p
 document.getElementById('modelsel').innerHTML='<option value="">– erst laden –</option>';
 allModels=[];document.getElementById('modelsearch').value='';
 loadModels();}
-async function loadTypes(){const r=await fetch('/api/types');const t=await r.json();
-document.getElementById('dtype').innerHTML=t.map(x=>`<option value="${x.id}">${x.label}</option>`).join('');}
-async function loadSettings(){const r=await fetch('/api/settings');const s=await r.json();
+async function loadTypes(){try{const r=await fetch('/api/types');const t=await r.json();
+if(!Array.isArray(t))return;
+const sel=document.getElementById('dtype');
+sel.textContent='';
+for(const x of t){const o=document.createElement('option');o.value=x.id;o.textContent=x.label;sel.appendChild(o);}
+}catch(e){document.getElementById('mstatus').textContent='Fehler beim Laden der Typen: '+e;}}
+async function loadSettings(){try{const r=await fetch('/api/settings');const s=await r.json();
 document.getElementById('provider').value=s.provider||'custom';
 document.getElementById('base_url').value=s.base_url||'';
 savedKeys=(s.keys&&typeof s.keys==='object')?s.keys:{};
 const p=document.getElementById('provider').value;
 document.getElementById('api_key').value=(savedKeys[p]!==undefined&&savedKeys[p]!=='')?savedKeys[p]:(s.api_key||'');
-document.getElementById('model').value=s.model||'';}
+document.getElementById('model').value=s.model||'';}catch(e){document.getElementById('sstatus').textContent='Fehler beim Laden: '+e;}}
 async function savesettings(){const p=curProvider();
 savedKeys[p]=document.getElementById('api_key').value;
 const b={provider:p,
@@ -162,8 +166,9 @@ try{const r=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'
 body:JSON.stringify({prompt:document.getElementById('prompt').value,dtype:document.getElementById('dtype').value,
 variant:document.getElementById('variant').value,mode:document.getElementById('mode').value})});
 const j=await r.json();if(!j.ok)throw new Error(j.error||r.status);
+if(!/^[\w.-]+\.html$/.test(j.file||''))throw new Error('Ungültiger Dateiname vom Server.');
 st.textContent='Fertig: '+j.file;
-const view='/generated/'+j.file,dl=view+'?download=1';
+const view='/generated/'+encodeURIComponent(j.file),dl=view+'?download=1';
 document.getElementById('dllink').href=dl;document.getElementById('dllink').setAttribute('download',j.file);
 document.getElementById('openlink').href=view;document.getElementById('fname').textContent=j.file;
 document.getElementById('frame').src=view;document.getElementById('preview').style.display='';
@@ -175,9 +180,9 @@ st.textContent=m;}
 btn.disabled=false;loadDiagrams();}
 async function loadModels(){const el=document.getElementById('sstatus');el.classList.remove('err');
 el.textContent='Lade Modelle …';document.getElementById('mload').disabled=true;
-const q=new URLSearchParams({base_url:document.getElementById('base_url').value.trim(),
-api_key:document.getElementById('api_key').value});
-try{const r=await fetch('/api/models?'+q.toString());const j=await r.json();
+const b={base_url:document.getElementById('base_url').value.trim(),
+api_key:document.getElementById('api_key').value};
+try{const r=await fetch('/api/models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});const j=await r.json();
 if(!j.ok)throw new Error(j.error||r.status);
 allModels=j.models||[];
 renderModelList();
@@ -187,25 +192,42 @@ document.getElementById('mload').disabled=false;}
 function renderModelList(){const q=document.getElementById('modelsearch').value.trim().toLowerCase();
 const cur=document.getElementById('model').value.trim();
 const sel=document.getElementById('modelsel');
-const list=q?allModels.filter(m=>m.toLowerCase().includes(q)):allModels;
-sel.innerHTML=list.map(m=>`<option value="${esc(m)}">${esc(m)}</option>`).join('')||'<option value="">(kein Treffer)</option>';
+const list=(q?allModels.filter(m=>m.toLowerCase().includes(q)):allModels).slice(0,500);
+sel.textContent='';
+if(!list.length){const o=document.createElement('option');o.value='';o.textContent='(kein Treffer)';sel.appendChild(o);}
+for(const m of list){const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);}
 if(cur&&list.includes(cur))sel.value=cur;
 const hint=document.getElementById('mcount');
 if(hint)hint.textContent=q?list.length+' / '+allModels.length+' Treffer':allModels.length+' Modelle';}
 function pickModel(){const v=document.getElementById('modelsel').value;
 if(v)document.getElementById('model').value=v;}
-function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/`/g,'&#96;');}
 async function loadDiagrams(){const st=document.getElementById('lstatus');const box=document.getElementById('dtable');
+st.classList.remove('err');
 try{const r=await fetch('/api/diagrams');const j=await r.json();if(!j.ok)throw new Error(j.error||r.status);
 if(!j.diagrams.length){box.innerHTML='<p class="empty">Noch keine Diagramme erzeugt.</p>';st.textContent='';return;}
 st.textContent=j.diagrams.length+' Diagramme auf dem Server (generated/).';
-box.innerHTML='<table><thead><tr><th>Datei / Pfad</th><th>Typ</th><th>Größe</th><th>Erstellt</th><th>Aktionen</th></tr></thead><tbody>'+
-j.diagrams.map(d=>`<tr><td class="mono">${esc(d.file)}<br><span style="color:var(--soft)">generated/${esc(d.file)}</span></td>`+
-`<td>${esc(d.dtype||'–')}</td><td>${(d.size/1024).toFixed(1)} KB</td><td>${esc(d.created)}</td>`+
-`<td><a class="linkbtn" href="/generated/${encodeURIComponent(d.file)}" target="_blank">Öffnen</a>`+
-`<a class="linkbtn" href="/generated/${encodeURIComponent(d.file)}?download=1" download="${esc(d.file)}">⬇ Laden</a>`+
-`<button class="linkbtn danger" onclick="delDiagram('${esc(d.file)}')">Löschen</button></td></tr>`).join('')+
-'</tbody></table>';}catch(e){st.classList.add('err');st.textContent='Fehler: '+e.message;}}
+box.textContent='';
+const tbl=document.createElement('table');
+tbl.innerHTML='<thead><tr><th>Datei / Pfad</th><th>Typ</th><th>Größe</th><th>Erstellt</th><th>Aktionen</th></tr></thead>';
+const tb=document.createElement('tbody');
+for(const d of j.diagrams){
+const tr=document.createElement('tr');
+const f=String(d.file||'');
+const td1=document.createElement('td');td1.className='mono';td1.textContent=f;
+const br=document.createElement('br');td1.appendChild(br);
+const sp=document.createElement('span');sp.style.color='var(--soft)';sp.textContent='generated/'+f;td1.appendChild(sp);
+const td2=document.createElement('td');td2.textContent=d.dtype||'–';
+const td3=document.createElement('td');td3.textContent=(Number(d.size||0)/1024).toFixed(1)+' KB';
+const td4=document.createElement('td');td4.textContent=d.created||'';
+const td5=document.createElement('td');
+const a1=document.createElement('a');a1.className='linkbtn';a1.href='/generated/'+encodeURIComponent(f);a1.target='_blank';a1.rel='noopener';a1.textContent='Öffnen';
+const a2=document.createElement('a');a2.className='linkbtn';a2.href='/generated/'+encodeURIComponent(f)+'?download=1';a2.setAttribute('download',f);a2.textContent='⬇ Laden';
+const b=document.createElement('button');b.className='linkbtn danger';b.textContent='Löschen';b.dataset.file=f;
+b.addEventListener('click',()=>delDiagram(b.dataset.file));
+td5.append(a1,a2,b);
+tr.append(td1,td2,td3,td4,td5);tb.appendChild(tr);}
+tbl.appendChild(tb);box.appendChild(tbl);}catch(e){st.classList.add('err');st.textContent='Fehler: '+e.message;}}
 async function delDiagram(f){if(!confirm('Wirklich löschen?\n'+f))return;
 try{const r=await fetch('/api/diagrams/'+encodeURIComponent(f),{method:'DELETE'});
 const j=await r.json();if(!j.ok)throw new Error(j.error||r.status);loadDiagrams();

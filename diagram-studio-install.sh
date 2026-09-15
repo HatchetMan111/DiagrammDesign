@@ -32,6 +32,15 @@ msg()  { echo -e "\033[1;32m[diagram-studio]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[diagram-studio]\033[0m $*" >&2; }
 fail() { echo -e "\033[1;31m[diagram-studio]\033[0m $*" >&2; exit 1; }
 
+# --- Input-Validierung (verhindert Command-Injection via Env) ---
+[[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || fail "PORT ungültig (1-65535): $PORT"
+[[ "$HN" =~ ^[A-Za-z0-9-]{1,63}$ ]] || fail "HN ungültig (nur A-Z, 0-9, -): $HN"
+[[ "$CORES" =~ ^[0-9]+$ ]] || fail "CORES ungültig: $CORES"
+[[ "$MEMORY" =~ ^[0-9]+$ ]] || fail "MEMORY ungültig: $MEMORY"
+[[ "$DISK" =~ ^[0-9]+$ ]] || fail "DISK ungültig: $DISK"
+[[ "$BRIDGE" =~ ^[A-Za-z0-9_.-]+$ ]] || fail "BRIDGE ungültig: $BRIDGE"
+[[ "$TARBALL_URL" =~ ^https?:// ]] || fail "TARBALL_URL muss http(s) sein."
+
 [ "$(id -u)" -eq 0 ] || fail "Bitte als root auf dem Proxmox-Host ausführen."
 command -v pct >/dev/null || fail "pct nicht gefunden — das Skript muss auf dem Proxmox-Host laufen."
 command -v pvesh >/dev/null || fail "pvesh nicht gefunden."
@@ -41,8 +50,9 @@ msg "Node: $NODE"
 
 # --- VMID ---
 if [ -z "${VMID:-}" ]; then
-  VMID="$(pvesh get /cluster/nextid)"
+  VMID="$(pvesh get /cluster/nextid 2>/dev/null | tr -d '\"[:space:]')"
 fi
+[[ "${VMID:-}" =~ ^[0-9]+$ ]] || fail "VMID ungültig: ${VMID:-leer}"
 msg "VMID: $VMID"
 if pct status "$VMID" >/dev/null 2>&1; then
   if [ "${REUSE:-0}" = "1" ]; then
@@ -105,7 +115,8 @@ fi
 msg "Warte auf Netzwerk im Container …"
 IP=""
 for i in $(seq 1 40); do
-  IP="$(pct exec "$VMID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  # hostname -I fehlt in Minimal-Containern → Fallback auf ip/hostname -i
+  IP="$(pct exec "$VMID" -- sh -c 'hostname -I 2>/dev/null || hostname -i 2>/dev/null || ip -4 -o addr show eth0 2>/dev/null | grep -oP "(?<=inet\s)\d+(\.\d+){3}" | head -n1' 2>/dev/null | awk '{print $1}' || true)"
   [ -n "$IP" ] && break
   sleep 3
 done
@@ -113,10 +124,11 @@ done
 
 # --- App installieren ---
 msg "Installiere Diagram-Studio …"
-pct exec "$VMID" -- bash -c "apt-get update -qq && apt-get install -y -qq python3 curl >/dev/null && mkdir -p /opt/diagram-studio/generated"
+pct exec "$VMID" -- bash -c "export DEBIAN_FRONTEND=noninteractive; apt-get update -qq && apt-get install -y -qq python3 curl >/dev/null && mkdir -p /opt/diagram-studio/generated"
 curl -fsSL "$TARBALL_URL" -o /tmp/diagram-studio.tar.gz || fail "Tarball-Download fehlgeschlagen: $TARBALL_URL"
 pct push "$VMID" /tmp/diagram-studio.tar.gz /tmp/diagram-studio.tar.gz
-pct exec "$VMID" -- bash -c "tar xzf /tmp/diagram-studio.tar.gz --strip-components=1 -C /opt/diagram-studio && cp /opt/diagram-studio/diagram-studio.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now diagram-studio"
+# Tarball robust entpacken (mit/ohne Top-Level-Verzeichnis) + Service-Port setzen
+pct exec "$VMID" -- bash -c "set -e; rm -rf /tmp/ds-extract && mkdir -p /tmp/ds-extract /opt/diagram-studio/generated && tar xzf /tmp/diagram-studio.tar.gz -C /tmp/ds-extract && if [ \$(ls -A /tmp/ds-extract | wc -l) -eq 1 ] && [ -d \$(ls -d /tmp/ds-extract/*/ | head -n1) ]; then cp -a /tmp/ds-extract/*/\. /opt/diagram-studio/; else cp -a /tmp/ds-extract/. /opt/diagram-studio/; fi && rm -rf /tmp/ds-extract /tmp/diagram-studio.tar.gz && sed -i 's/^ExecStart=.*server.py .*/ExecStart=\/usr\/bin\/python3 \/opt\/diagram-studio\/server.py $PORT/' /opt/diagram-studio/diagram-studio.service && cp /opt/diagram-studio/diagram-studio.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now diagram-studio"
 rm -f /tmp/diagram-studio.tar.gz
 
 sleep 2
@@ -128,4 +140,4 @@ msg "FERTIG ✅  http://$IP:$PORT"
 msg "KI einrichten: im Browser oben auf 'Einstellungen (KI)' → Anbieter wählen,"
 msg "     OmniRoute-Key oder OpenRouter-Key eintragen, Modell setzen, speichern."
 msg "Update der App: Tarball erneut ausrollen mit"
-msg "     curl -fsSL $TARBALL_URL -o /tmp/ds.tgz && pct push $VMID /tmp/ds.tgz /tmp/ds.tgz && pct exec $VMID -- bash -c 'tar xzf /tmp/ds.tgz --strip-components=1 -C /opt/diagram-studio && systemctl restart diagram-studio'"
+msg "     curl -fsSL $TARBALL_URL -o /tmp/ds.tgz && pct push $VMID /tmp/ds.tgz /tmp/diagram-studio.tar.gz && pct exec $VMID -- bash -c 'rm -rf /tmp/ds-extract && mkdir -p /tmp/ds-extract && tar xzf /tmp/diagram-studio.tar.gz -C /tmp/ds-extract && cp -a /tmp/ds-extract/. /opt/diagram-studio/ && rm -rf /tmp/ds-extract && systemctl restart diagram-studio'"
