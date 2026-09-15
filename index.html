@@ -155,7 +155,11 @@ const b={provider:curProvider(),base_url:document.getElementById('base_url').val
 api_key:document.getElementById('api_key').value,model:document.getElementById('model').value.trim()};
 try{const r=await fetch('/api/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
 const j=await r.json();
-el.textContent=j.ok?('OK – Modell antwortet ('+(j.model||'?')+'): '+j.reply):('Fehler: '+(j.error||r.status));
+if(j.ok){el.textContent='OK – Modell antwortet ('+(j.model||'?')+'): '+j.reply;}
+else{let m='Fehler: '+(j.error||r.status);
+if(/batch|model|reasoning|401|404|not supported|No endpoints/i.test(m))
+m+='\n→ Tipp: Dieses Modell ist ggf. nur per Batch-API oder als Reasoning-Modell nutzbar. Über „Modelle vom Anbieter laden" ein Chat-fähiges Modell wählen (ohne thinking/reasoning im Namen), dann speichern.';
+el.textContent=m;}
 if(!j.ok)el.classList.add('err');
 }catch(e){el.classList.add('err');el.textContent='Fehler: '+e;}
 document.getElementById('tbtn').disabled=false;}
@@ -174,7 +178,7 @@ document.getElementById('openlink').href=view;document.getElementById('fname').t
 document.getElementById('frame').src=view;document.getElementById('preview').style.display='';
 }catch(e){st.classList.add('err');
 let m='Fehler: '+e.message;
-if(/model|401|404|not supported|No endpoints/i.test(e.message))
+if(/batch|reasoning|model|401|404|not supported|No endpoints/i.test(e.message))
 m+='\n→ Tipp: Unter „Einstellungen (KI)" auf „Modelle vom Anbieter laden" klicken, eine ID aus der Liste wählen und speichern.';
 st.textContent=m;}
 btn.disabled=false;loadDiagrams();}

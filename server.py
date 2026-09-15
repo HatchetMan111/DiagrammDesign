@@ -209,20 +209,60 @@ def check_data(data):
     return data
 
 
+def _message_text(msg):
+    """Text aus einer OpenAI-kompatiblen Message holen.
+    content kann str, Liste von Content-Parts oder None sein
+    (Reasoning-Modelle via OpenRouter liefern oft content=null + reasoning)."""
+    if not isinstance(msg, dict):
+        return ""
+    c = msg.get("content")
+    if isinstance(c, str) and c.strip():
+        return c.strip()
+    if isinstance(c, list):
+        parts = []
+        for p in c:
+            if isinstance(p, dict):
+                t = p.get("text")
+                if isinstance(t, str) and t.strip():
+                    parts.append(t)
+        if parts:
+            return "".join(parts).strip()
+    return ""
+
+
+def _empty_reply_error(choice, msg, data):
+    """Hilfreiche Fehlermeldung, wenn die LLM-Antwort keinen Text enthält."""
+    fr = choice.get("finish_reason") if isinstance(choice, dict) else None
+    if isinstance(msg, dict) and msg.get("refusal"):
+        return f"Modell verweigert die Antwort: {str(msg['refusal'])[:200]}"
+    if isinstance(msg, dict) and (msg.get("reasoning") or msg.get("reasoning_details")):
+        return ("Modell liefert nur internes Reasoning, keinen Antwort-Text "
+                f"(finish: {fr}). Tipp: Non-Reasoning-Modell wählen "
+                "(z. B. ohne 'thinking'/'reasoning' im Namen).")
+    if fr == "length":
+        return ("Antwort abgeschnitten (Token-Limit erreicht, kein Text). "
+                "Tipp: anderes Modell wählen oder Prompt kürzen.")
+    return "Unerwartete LLM-Antwort (leerer Content): " + json.dumps(data)[:500]
+
+
 def llm_test(settings):
     data = check_data(post_chat(settings, {
         "model": settings.get("model") or "auto/best-free",
         "messages": [{"role": "user", "content": "Antworte mit genau einem Wort: OK"}],
-        "max_tokens": 10,
+        # Absichtlich großzügig: Reasoning-Modelle verbrauchen Tokens für
+        # internes Denken — mit max_tokens=10 käme nur content=null zurück.
+        "max_tokens": 500,
         "temperature": 0,
     }))
     try:
-        content = data["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
-            raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
-        return content.strip()
+        choice = data["choices"][0]
+        msg = choice.get("message", {})
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
+    text = _message_text(msg)
+    if text:
+        return text[:200]
+    raise RuntimeError(_empty_reply_error(choice, msg, data))
 
 
 def llm_generate(settings, dtype, variant, prompt):
@@ -249,11 +289,16 @@ def llm_generate(settings, dtype, variant, prompt):
         "temperature": 0.4,
     }))
     try:
-        content = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        msg = choice.get("message", {})
     except (KeyError, IndexError, TypeError):
         raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
-    if not isinstance(content, str):
-        raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
+    content = _message_text(msg)
+    if not content:
+        raise RuntimeError(_empty_reply_error(choice, msg, data))
+    if isinstance(choice, dict) and choice.get("finish_reason") == "length":
+        raise RuntimeError("LLM-Antwort abgeschnitten (Token-Limit). "
+                           "Tipp: kürzeren Prompt, Variante 'Minimal' oder anderes Modell versuchen.")
     m = re.search(r"```html\s*(.*?)```", content, re.S)
     html = (m.group(1) if m else content).strip()
     if len(html) > MAX_HTML:
