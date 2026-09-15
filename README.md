@@ -11,10 +11,10 @@ Web-UI zum Erstellen von Diagrammen nach dem **diagram-design** Skill-System
 
 ## LXC auf Proxmox (Community-Script-Stil)
 
-Auf dem **Proxmox-Host als root** ausführen:
+Auf dem **Proxmox-Host als root** ausführen (lädt Installer + Tarball direkt von GitHub):
 
 ```bash
-bash -c "$(curl -fsSL http://192.168.178.51:8090/diagram-studio-install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/HatchetMan111/DiagrammDesign/main/diagram-studio-install.sh)"
 ```
 
 Der Installer erkennt automatisch: freie VMID (`nextid`), Storage (bevorzugt
@@ -23,8 +23,13 @@ Der Installer erkennt automatisch: freie VMID (`nextid`), Storage (bevorzugt
 
 ```bash
 VMID=200 HN=diagram-studio CORES=2 MEMORY=2048 DISK=8 PASSWORD=geheim \
-bash -c "$(curl -fsSL http://192.168.178.51:8090/diagram-studio-install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/HatchetMan111/DiagrammDesign/main/diagram-studio-install.sh)"
 ```
+
+Standard-Tarball ist das GitHub-Archiv (`.../archive/refs/heads/main.tar.gz`).
+LAN-Alternative: eigenen Artefakt-Server nutzen, z. B.
+`ARTIFACT_BASE=http://192.168.178.51:8090` (erwartet dort `diagram-studio.tar.gz`)
+oder direkt `TARBALL_URL=<url>` setzen.
 
 Danach im Browser `http://<LXC-IP>:8123` öffnen → oben **Einstellungen (KI)** →
 Anbieter wählen, Key + Modell eintragen, speichern.

@@ -7,12 +7,14 @@
 #   - Vorschau + direkter Download-Button (HTML)
 #   - Einstellungsseite für OmniRoute- und OpenRouter-API (Basis-URL, Key, Modell)
 #
-# Verwendung auf dem PROXMOX-HOST als root:
-#   bash -c "$(curl -fsSL http://192.168.178.51:8090/diagram-studio-install.sh)"
+# Verwendung auf dem PROXMOX-HOST als root (direkt von GitHub):
+#   bash -c "$(curl -fsSL https://raw.githubusercontent.com/HatchetMan111/DiagrammDesign/main/diagram-studio-install.sh)"
 #
 # Optionale Umgebungsvariablen:
 #   VMID=200 HN=diagram-studio CORES=2 MEMORY=2048 DISK=8 BRIDGE=vmbr0
-#   PASSWORD=geheim PORT=8123 ARTIFACT_BASE=http://192.168.178.51:8090
+#   PASSWORD=geheim PORT=8123
+#   TARBALL_URL=https://github.com/HatchetMan111/DiagrammDesign/archive/refs/heads/main.tar.gz
+#   ARTIFACT_BASE=http://192.168.178.51:8090  (LAN-Alternative: nutzt $ARTIFACT_BASE/diagram-studio.tar.gz)
 #   STORAGE=local-lvm TEMPLATE="local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst"
 #   REUSE=1  (bestehenden Container $VMID weiterinstallieren statt neu erstellen)
 ###############################################################################
@@ -25,8 +27,14 @@ CORES="${CORES:-2}"
 MEMORY="${MEMORY:-2048}"
 DISK="${DISK:-8}"
 BRIDGE="${BRIDGE:-vmbr0}"
-ARTIFACT_BASE="${ARTIFACT_BASE:-http://192.168.178.51:8090}"
-TARBALL_URL="${TARBALL_URL:-$ARTIFACT_BASE/diagram-studio.tar.gz}"
+DEFAULT_TARBALL="https://github.com/HatchetMan111/DiagrammDesign/archive/refs/heads/main.tar.gz"
+if [ -n "${TARBALL_URL:-}" ]; then
+  : # explizit gesetzt, übernehmen
+elif [ -n "${ARTIFACT_BASE:-}" ]; then
+  TARBALL_URL="$ARTIFACT_BASE/diagram-studio.tar.gz"
+else
+  TARBALL_URL="$DEFAULT_TARBALL"
+fi
 
 msg()  { echo -e "\033[1;32m[diagram-studio]\033[0m $*"; }
 warn() { echo -e "\033[1;33m[diagram-studio]\033[0m $*" >&2; }
