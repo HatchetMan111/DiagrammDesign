@@ -68,9 +68,14 @@ td.mono{font-family:'Geist Mono',monospace;font-size:.75rem;word-break:break-all
         <button class="btn accent" id="go" onclick="generate()">Diagramm erzeugen</button></div>
     </div>
     <div class="status" id="mstatus"></div>
+    <div class="dlrow" id="reworkbox" style="display:none;margin-top:.75rem">
+      <span class="hint">✏️ Überarbeitung von <code id="reworkname"></code> — Änderungswunsch oben beschreiben, dann erzeugen (Original bleibt erhalten).</span>
+      <button class="btn ghost" onclick="cancelRework()">Abbrechen</button>
+    </div>
     <div class="preview" id="preview" style="display:none">
       <div class="dlrow">
         <a class="btn" id="dllink" href="#" download>⬇ HTML herunterladen</a>
+        <a class="btn ghost" id="svglink" href="#" download>⬇ SVG herunterladen</a>
         <a class="btn ghost" id="openlink" href="#" target="_blank" rel="noopener">Im neuen Tab öffnen</a>
       </div>
       <p class="hint" id="fname"></p>
@@ -118,7 +123,16 @@ function show(p){for(const k of ['make','list','settings']){
 document.getElementById('pane-'+k).style.display=k===p?'':'none';
 document.getElementById('tab-'+k).classList.toggle('active',k===p);}
 if(p==='list')loadDiagrams();}
-let allModels=[],savedKeys={};
+let allModels=[],savedKeys={},reworkFile=null;
+function startRework(f){reworkFile=f;
+document.getElementById('reworkbox').style.display='';
+document.getElementById('reworkname').textContent=f;
+document.getElementById('prompt').value='';
+document.getElementById('prompt').placeholder='z. B. Füge einen Redis-Cache zwischen Backend und Datenbank hinzu …';
+show('make');document.getElementById('prompt').focus();}
+function cancelRework(){reworkFile=null;
+document.getElementById('reworkbox').style.display='none';
+document.getElementById('prompt').placeholder='z. B. Architektur meiner App: Frontend, Backend, Datenbank, Redis-Cache …';}
 function curProvider(){return document.getElementById('provider').value;}
 function preset(){const p=curProvider();
 if(URLS[p])document.getElementById('base_url').value=URLS[p];}
@@ -164,18 +178,26 @@ if(!j.ok)el.classList.add('err');
 }catch(e){el.classList.add('err');el.textContent='Fehler: '+e;}
 document.getElementById('tbtn').disabled=false;}
 async function generate(){const btn=document.getElementById('go');const st=document.getElementById('mstatus');
-st.classList.remove('err');st.textContent='Erzeuge …';btn.disabled=true;
+st.classList.remove('err');st.textContent=reworkFile?'Überarbeite …':'Erzeuge …';btn.disabled=true;
 document.getElementById('preview').style.display='none';
+const payload={prompt:document.getElementById('prompt').value,dtype:document.getElementById('dtype').value,
+variant:document.getElementById('variant').value,
+mode:reworkFile?'rework':document.getElementById('mode').value};
+if(reworkFile)payload.base_file=reworkFile;
 try{const r=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
-body:JSON.stringify({prompt:document.getElementById('prompt').value,dtype:document.getElementById('dtype').value,
-variant:document.getElementById('variant').value,mode:document.getElementById('mode').value})});
+body:JSON.stringify(payload)});
 const j=await r.json();if(!j.ok)throw new Error(j.error||r.status);
 if(!/^[\w.-]+\.html$/.test(j.file||''))throw new Error('Ungültiger Dateiname vom Server.');
 st.textContent='Fertig: '+j.file;
 const view='/generated/'+encodeURIComponent(j.file),dl=view+'?download=1';
+const svgfile=j.file.replace(/\.html?$/i,'.svg');
+const svgview=view+'?format=svg',svgdl=svgview+'&download=1';
 document.getElementById('dllink').href=dl;document.getElementById('dllink').setAttribute('download',j.file);
+document.getElementById('svglink').href=svgdl;document.getElementById('svglink').setAttribute('download',svgfile);
 document.getElementById('openlink').href=view;document.getElementById('fname').textContent=j.file;
 document.getElementById('frame').src=view;document.getElementById('preview').style.display='';
+if(reworkFile){reworkFile=j.file;document.getElementById('reworkname').textContent=j.file;
+document.getElementById('prompt').value='';document.getElementById('prompt').focus();}
 }catch(e){st.classList.add('err');
 let m='Fehler: '+e.message;
 if(/batch|reasoning|model|401|404|not supported|No endpoints/i.test(e.message))
@@ -227,9 +249,12 @@ const td4=document.createElement('td');td4.textContent=d.created||'';
 const td5=document.createElement('td');
 const a1=document.createElement('a');a1.className='linkbtn';a1.href='/generated/'+encodeURIComponent(f);a1.target='_blank';a1.rel='noopener';a1.textContent='Öffnen';
 const a2=document.createElement('a');a2.className='linkbtn';a2.href='/generated/'+encodeURIComponent(f)+'?download=1';a2.setAttribute('download',f);a2.textContent='⬇ Laden';
+const a3=document.createElement('a');a3.className='linkbtn';a3.href='/generated/'+encodeURIComponent(f)+'?format=svg&download=1';a3.setAttribute('download',f.replace(/\.html?$/i,'.svg'));a3.textContent='SVG';
+const rw=document.createElement('button');rw.className='linkbtn';rw.textContent='✏️ Überarbeiten';rw.dataset.file=f;
+rw.addEventListener('click',()=>startRework(rw.dataset.file));
 const b=document.createElement('button');b.className='linkbtn danger';b.textContent='Löschen';b.dataset.file=f;
 b.addEventListener('click',()=>delDiagram(b.dataset.file));
-td5.append(a1,a2,b);
+td5.append(a1,a2,a3,rw,b);
 tr.append(td1,td2,td3,td4,td5);tb.appendChild(tr);}
 tbl.appendChild(tb);box.appendChild(tbl);}catch(e){st.classList.add('err');st.textContent='Fehler: '+e.message;}}
 async function delDiagram(f){if(!confirm('Wirklich löschen?\n'+f))return;

@@ -19,6 +19,7 @@ os.makedirs(GEN_DIR, exist_ok=True)
 
 MAX_BODY = 1_000_000  # 1 MB Limit für POST-Bodys (DoS-Schutz)
 MAX_HTML = 5_000_000  # 5 MB Limit für generiertes HTML
+MAX_BASE = 150_000  # max. Zeichen des Basis-Diagramms für Überarbeitung
 
 DEFAULTS = {
     "provider": "omniroute",
@@ -308,6 +309,53 @@ def llm_generate(settings, dtype, variant, prompt):
     return html
 
 
+def svg_from_html(html):
+    """Erstes inline-SVG aus einem generierten HTML-Dokument extrahieren."""
+    m = re.search(r"<svg\b.*?</svg>", html, re.S | re.I)
+    return m.group(0) if m else None
+
+
+def llm_rework(settings, dtype, variant, base_html, instruction):
+    """Bestehendes Diagramm per KI überarbeiten (Nachbearbeitung)."""
+    if len(base_html) > MAX_BASE:
+        raise RuntimeError(f"Basis-Diagramm zu groß ({len(base_html)} Zeichen, Limit {MAX_BASE}).")
+    ref = type_reference(dtype)
+    system = (CORE_RULES + "\n\n--- TYP-REFERENZ (" + dtype + ") ---\n" + ref
+              + "\n\n--- AUFGABE: ÜBERARBEITUNG ---\n"
+                "Unten steht das AKTUELLE Diagramm-HTML. Arbeite den Änderungswunsch ein "
+                "und gib wieder EIN komplettes, eigenständiges HTML-Dokument mit inline-SVG zurück. "
+                "Behalte Stil, IDs-Schema und alles bei, was nicht geändert werden soll. "
+                "Ausgabe: NUR das HTML, keine Markdown-Fences, keine Erklärungen.")
+    user = (f"Diagrammtyp: {dtype}\nAktuelles HTML:\n{base_html}\n\n"
+            f"Änderungswunsch:\n{instruction}")
+    data = check_data(post_chat(settings, {
+        "model": settings.get("model") or "auto/best-free",
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.4,
+    }))
+    try:
+        choice = data["choices"][0]
+        msg = choice.get("message", {})
+    except (KeyError, IndexError, TypeError):
+        raise RuntimeError("Unerwartete LLM-Antwort: " + json.dumps(data)[:500])
+    content = _message_text(msg)
+    if not content:
+        raise RuntimeError(_empty_reply_error(choice, msg, data))
+    if isinstance(choice, dict) and choice.get("finish_reason") == "length":
+        raise RuntimeError("LLM-Antwort abgeschnitten (Token-Limit). "
+                           "Tipp: kleinere Änderung in mehreren Schritten oder anderes Modell versuchen.")
+    m = re.search(r"```html\s*(.*?)```", content, re.S)
+    html = (m.group(1) if m else content).strip()
+    if len(html) > MAX_HTML:
+        raise RuntimeError("LLM-Antwort zu groß (>5 MB), verworfen.")
+    if "<svg" not in html.lower() or "<html" not in html.lower():
+        raise RuntimeError("LLM hat kein gültiges HTML+SVG geliefert.")
+    return html
+
+
 def draft_generate(prompt, dtype):
     try:
         with open(os.path.join(BASE, "skill", "template.html"), encoding="utf-8") as f:
@@ -365,6 +413,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(b)
 
+    def _send_bytes(self, b, ctype, download_name=None, csp=None):
+        # Sichere Download-Dateinamen (keine Quotes/Newlines → Header-Injection)
+        if download_name:
+            download_name = re.sub(r'[^A-Za-z0-9._-]', '_', download_name)[:120]
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self._sec_headers()
+        if csp:
+            self.send_header("Content-Security-Policy", csp)
+        if download_name:
+            self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(b)
+
     def _send_file(self, path, ctype, download_name=None, sandbox=False):
         try:
             with open(path, "rb") as f:
@@ -372,21 +436,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self.send_error(404)
             return
-        # Sichere Download-Dateinamen (keine Quotes/Newlines → Header-Injection)
-        if download_name:
-            download_name = re.sub(r'[^A-Za-z0-9._-]', '_', download_name)[:120]
-        self.send_response(200)
-        self.send_header("Content-Type", ctype)
-        self._sec_headers()
-        if sandbox:
-            # Generierte LLM-Diagramme isolieren: kein Zugriff auf /api/* (Key-Klau via iframe-JS)
-            self.send_header("Content-Security-Policy", "sandbox allow-scripts")
-        if download_name:
-            self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
-        self.send_header("Content-Length", str(len(b)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(b)
+        self._send_bytes(b, ctype, download_name,
+                         csp="sandbox allow-scripts" if sandbox else None)
 
     def _read_json(self):
         try:
@@ -458,8 +509,26 @@ class Handler(BaseHTTPRequestHandler):
             if not path:
                 self.send_error(400)
                 return
-            dl = "download" in parse_qs(u.query, keep_blank_values=True)
+            q = parse_qs(u.query, keep_blank_values=True)
+            dl = "download" in q
             name = os.path.basename(path)
+            if (q.get("format", [""])[0] or "").lower() == "svg":
+                # SVG-Export: erstes inline-SVG aus dem HTML extrahieren
+                try:
+                    with open(path, encoding="utf-8") as f:
+                        src = f.read(MAX_HTML + 1)
+                except OSError:
+                    self.send_error(404)
+                    return
+                svg = svg_from_html(src)
+                if not svg:
+                    self.send_error(404, "kein SVG gefunden")
+                    return
+                sname = name[:-5] + ".svg" if name.lower().endswith(".html") else name + ".svg"
+                # sandbox ohne allow-scripts: SVG braucht kein JS (statisch), kein Zugriff auf /api/*
+                self._send_bytes(svg.encode("utf-8"), "image/svg+xml; charset=utf-8",
+                                 download_name=sname if dl else None, csp="sandbox")
+                return
             self._send_file(path, "text/html; charset=utf-8",
                             download_name=name if dl else None, sandbox=True)
         else:
@@ -550,22 +619,38 @@ class Handler(BaseHTTPRequestHandler):
             prompt = str(payload.get("prompt") or "")[:4000].strip()
             dtype = str(payload.get("dtype") or "architecture").strip()
             variant = payload.get("variant") if payload.get("variant") in ("minimal", "full") else "minimal"
-            mode = payload.get("mode") if payload.get("mode") in ("ai", "draft") else "ai"
-            if not prompt and mode == "ai":
-                self._json({"ok": False, "error": "Bitte eine Beschreibung eingeben."}, 400)
+            mode = payload.get("mode") if payload.get("mode") in ("ai", "draft", "rework") else "ai"
+            if not prompt and mode in ("ai", "rework"):
+                self._json({"ok": False, "error": "Bitte eine Beschreibung / einen Änderungswunsch eingeben."}, 400)
                 return
             if not any(t == dtype for t, _ in TYPES):
                 dtype = "architecture"
             try:
+                suffix = ""
                 if mode == "draft":
                     html, slug = draft_generate(prompt or "Mein Diagramm", dtype)
+                elif mode == "rework":
+                    base_path = gen_path(str(payload.get("base_file") or ""))
+                    if not base_path:
+                        raise RuntimeError("Ungültige Basis-Datei für die Überarbeitung.")
+                    try:
+                        with open(base_path, encoding="utf-8") as f:
+                            base_html = f.read(MAX_BASE + 1)
+                    except OSError:
+                        raise RuntimeError("Basis-Datei nicht gefunden.")
+                    settings = load_settings()
+                    if not settings.get("base_url"):
+                        raise RuntimeError("Keine API-Basis-URL konfiguriert (Einstellungen).")
+                    html = llm_rework(settings, dtype, variant, base_html, prompt)
+                    slug = slugify(prompt[:60])
+                    suffix = "-v2"
                 else:
                     settings = load_settings()
                     if not settings.get("base_url"):
                         raise RuntimeError("Keine API-Basis-URL konfiguriert (Einstellungen).")
                     html = llm_generate(settings, dtype, variant, prompt)
                     slug = slugify(prompt[:60])
-                fname = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}-{dtype}.html"
+                fname = f"{time.strftime('%Y%m%d-%H%M%S')}-{slug}{suffix}-{dtype}.html"
                 with open(os.path.join(GEN_DIR, fname), "w", encoding="utf-8") as f:
                     f.write(html)
                 self._json({"ok": True, "file": fname})

@@ -4,7 +4,10 @@ Web-UI zum Erstellen von Diagrammen nach dem **diagram-design** Skill-System
 (40 Diagrammtypen, editorial Design, self-contained HTML + SVG).
 
 - **Erstellen-Tab:** Beschreibung eingeben, Typ wählen (Architektur, Flowchart, Sequenz, …),
-  per KI erzeugen oder Schnell-Entwurf ohne KI, Vorschau, **⬇ HTML-Download-Button**
+  per KI erzeugen oder Schnell-Entwurf ohne KI, Vorschau, **⬇ HTML- und SVG-Download-Buttons**
+- **Diagramme-Tab:** Liste aller erzeugten Diagramme mit Öffnen, HTML-/SVG-Download,
+  Löschen und **✏️ Überarbeiten** (bestehendes Diagramm per KI nachbearbeiten —
+  Änderungswunsch eingeben, es entsteht eine neue `-v2-`-Version, das Original bleibt)
 - **Einstellungen-Tab:** KI-Anbieter konfigurieren – **OmniRoute** (lokal, vorbelegt),
   **OpenRouter** oder benutzerdefiniert (OpenAI-kompatibel): Basis-URL, API-Key, Modell
 - Keine Abhängigkeiten: nur Python 3 (Standardbibliothek), systemd-Service inklusive
